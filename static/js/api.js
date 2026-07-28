@@ -43,3 +43,53 @@ function __init() {
 
 
 __init();
+
+function putEmail(id, newEmail) {
+    fetch(`/people/${id}/email`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ email: newEmail })
+    })
+    .then(resp => {
+        if (!resp.ok) throw Error('Erro ao atualizar e-mail');
+        return resp.json();
+    })
+    .then(data => {
+        console.log('E-mail atualizado com sucesso:', data);
+    })
+    .catch(error => console.error(error));
+}
+
+function deletePerson(id) {
+    fetch(`/people/${id}`, {
+        method: 'DELETE'
+    })
+    .then(resp => {
+        if (!resp.ok) throw Error('Erro ao deletar pessoa');
+        return resp.json();
+    })
+    .then(data => {
+        console.log('Registro deletado com sucesso:', data);
+    })
+    .catch(error => console.error(error));
+}
+
+function updatePerson(id, updatedFields) {
+    fetch(`/people/${id}`, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updatedFields)
+    })
+    .then(resp => {
+        if (!resp.ok) throw Error('Erro ao atualizar dados');
+        return resp.json();
+    })
+    .then(data => {
+        console.log('Dados atualizados com sucesso:', data);
+    })
+    .catch(error => console.error(error));
+}
