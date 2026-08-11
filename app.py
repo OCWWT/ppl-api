@@ -1,57 +1,70 @@
 import os
 import json
-import sqlite3
 from flask import Flask, Response, jsonify, render_template, request
+from flask_sqlalchemy import SQLAlchemy
+
 
 WD = os.path.dirname(os.path.abspath(__file__))
 DATA_F = os.path.join(WD, 'data.json')
-DB_FILE = os.path.join(WD, 'database.db')
 
-app = Flask(__name__)
+db = SQLAlchemy()
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS people (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            first_name TEXT NOT NULL,
-            last_name TEXT NOT NULL,
-            email TEXT NOT NULL
-        )
-    ''')
-    
-    cursor.execute("SELECT COUNT(*) FROM people")
-    if cursor.fetchone()[0] == 0:
-        if os.path.exists(DATA_F):
-            with open(DATA_F, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                for person in data:
-                    cursor.execute('''
-                        INSERT INTO people (id, first_name, last_name, email)
-                        VALUES (?, ?, ?, ?)
-                    ''', (person['id'], person['first_name'], person['last_name'], person['email']))
-            
-    conn.commit()
-    conn.close()
+def create_app() -> Flask:
+    _app = Flask(__name__)
+    with _app.app_context():
+        _app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(WD, 'database.db')
+        _app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+        db.init_app(_app)
+        db.create_all()
+        if Person.query.count() == 0:
+            if os.path.exists(DATA_F):
+                with open(DATA_F, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    for person in data:
+                        p = Person(
+                            id=person['id'],
+                            first_name=person['first_name'],
+                            last_name=person['last_name'],
+                            email=person['email']
+                        )
+                        db.session.add(p)
+                    db.session.commit()
+    return _app
 
-init_db()
+class Person(db.Model):
+    __tablename__ = 'people'
+
+    id = db.Column(db.Integer, primary_key=True)
+    first_name = db.Column(db.String(32), nullable=False)
+    last_name = db.Column(db.String(128), nullable=False)
+    email = db.Column(db.String(512), nullable=False)
+
+    @staticmethod
+    def new(data: dict) -> 'Person':
+        p = Person()
+        p.first_name = data['first_name']
+        p.last_name = data['last_name']
+        p.email = data['email']
+        db.session.add(p)
+        db.session.commit()
+        return p
+
+    def toDict(self) -> dict:
+        return {
+            'id': self.id,
+            'first_name': self.first_name,
+            'last_name': self.last_name,
+            'email': self.email
+        }
+
+app = create_app()
 
 @app.route('/people', methods=['GET'])
 def people() -> Response:
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT id, first_name, last_name, email FROM people")
-    rows = cursor.fetchall()
-    conn.close()
-    
-    people_list = [
-        {'id': row[0], 'first_name': row[1], 'last_name': row[2], 'email': row[3]}
-        for row in rows
-    ]
-    return jsonify(people_list)
+    data = []
+    for p in Person.query.all():
+        data.append(p.toDict())
+    return jsonify(data)
 
 
 @app.route('/people/new', methods=['POST'])
@@ -61,45 +74,26 @@ def new_person():
     if not body or not all(k in body for k in ('first_name', 'last_name', 'email')):
         return jsonify({"error": "Missing required fields"}), 400
 
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        INSERT INTO people (first_name, last_name, email)
-        VALUES (?, ?, ?)
-    ''', (body['first_name'], body['last_name'], body['email']))
-    
-    conn.commit()
-    new_id = cursor.lastrowid
-    conn.close()
-
-    p = {
-        'id': new_id,
+    data = {
         'first_name': body['first_name'],
         'last_name': body['last_name'],
         'email': body['email']
     }
 
-    return jsonify(p), 201
+    p = Person.new(data)
+    sync_json()
+    return jsonify(p.toDict()), 201
 
 
 @app.route('/', methods=['GET'])
 def index() -> Response:
     return render_template('index.html')
 
-# [sinc do json ;D]
+
+# [sinczera ]
 
 def sync_json():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, first_name, last_name, email FROM people")
-    rows = cursor.fetchall()
-    conn.close()
-
-    data = [
-        {'id': row[0], 'first_name': row[1], 'last_name': row[2], 'email': row[3]}
-        for row in rows
-    ]
+    data = [p.toDict() for p in Person.query.all()]
     with open(DATA_F, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
@@ -113,17 +107,12 @@ def update_email(person_id: int):
     if not body or 'email' not in body:
         return jsonify({"error": "Missing required 'email' field"}), 400
 
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    cursor.execute("UPDATE people SET email = ? WHERE id = ?", (body['email'], person_id))
-    changes = conn.total_changes
-    conn.commit()
-    conn.close()
-
-    if changes == 0:
+    person = Person.query.get(person_id)
+    if not person:
         return jsonify({"error": "Person not found"}), 404
 
+    person.email = body['email']
+    db.session.commit()
 
     sync_json()
 
@@ -134,23 +123,20 @@ def update_email(person_id: int):
 
 @app.route('/people/<int:person_id>', methods=['DELETE'])
 def delete_person(person_id: int):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    cursor.execute("DELETE FROM people WHERE id = ?", (person_id,))
-    changes = conn.total_changes
-    conn.commit()
-    conn.close()
-
-    if changes == 0:
+    person = Person.query.get(person_id)
+    if not person:
         return jsonify({"error": "Person not found"}), 404
+
+    db.session.delete(person)
+    db.session.commit()
 
     sync_json()
 
     return jsonify({"message": f"Person {person_id} deleted successfully"}), 200
 
 
-# [FUNÇÃO: UPDATE]
+# [FUNÇÃO UPDATE]
+
 @app.route('/people/<int:person_id>', methods=['PATCH'])
 def update_person(person_id: int):
     body = request.get_json()
@@ -158,31 +144,22 @@ def update_person(person_id: int):
     if not body:
         return jsonify({"error": "No data provided"}), 400
 
+    person = Person.query.get(person_id)
+    if not person:
+        return jsonify({"error": "Person not found"}), 404
+
     allowed_fields = ['first_name', 'last_name', 'email']
-    updates = []
-    params = []
+    has_changes = False
 
     for key, value in body.items():
         if key in allowed_fields:
-            updates.append(f"{key} = ?")
-            params.append(value)
+            setattr(person, key, value)
+            has_changes = True
 
-    if not updates:
+    if not has_changes:
         return jsonify({"error": "No valid fields provided for update"}), 400
 
-    params.append(person_id)
-    query = f"UPDATE people SET {', '.join(updates)} WHERE id = ?"
-
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute(query, params)
-    changes = conn.total_changes
-    conn.commit()
-    conn.close()
-
-    if changes == 0:
-        return jsonify({"error": "Person not found"}), 404
-
+    db.session.commit()
     sync_json()
 
     return jsonify({"message": f"Person {person_id} updated successfully"}), 200
